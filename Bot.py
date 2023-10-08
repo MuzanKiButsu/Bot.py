@@ -1,42 +1,75 @@
-import sqlite3
+import telebot
+import os
+import ffmpeg
+import re
 
-conn = sqlite3.connect("file_storage.db")
-cursor = conn.cursor()
+# Create a Telegram bot object
+bot = telebot.TeleBot('6337637965:AAFVJc09tFgqgeAszChm_XdjTYaQA24HFRw')
 
-# Create a table to store file information
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        file_id TEXT,
-        file_name TEXT
-    )
-""")
-conn.commit()
+# Define a function to rename a file
+def rename_file(file_path, episode_number, format):
+    """Renames a file to the specified episode number.
 
-def start(update, context):
-    update.message.reply_text("Welcome! Send a file to store it.")
+    Args:
+        file_path: The path to the file to rename.
+        episode_number: The episode number to rename the file to.
+        format: The format of the new file name.
 
-def help(update, context):
-    update.message.reply_text("Send a file to store it with /storefile command.")
+    Returns:
+        The new file path.
+    """
 
-def store_file(update, context):
-    user_id = update.message.from_user.id
-    file_id = update.message.document.file_id
-    file_name = update.message.document.file_name
+    # Get the file extension
+    file_extension = os.path.splitext(file_path)[1]
 
-    # Store file information in the database
-    cursor.execute("INSERT INTO files (user_id, file_id, file_name) VALUES (?, ?, ?)",
-                   (user_id, file_id, file_name))
-    conn.commit()
+    # Create a new file path with the episode number
+    new_file_path = os.path.join(os.path.dirname(file_path), format.format(episode_number, file_extension))
 
-    update.message.reply_text(f"File '{file_name}' stored successfully.")
+    # Rename the file
+    os.rename(file_path, new_file_path)
 
-# Set up command handlers
-updater = Updater(token="YOUR_API_TOKEN", use_context=True)
-dispatcher = updater.dispatcher
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(CommandHandler("help", help))
-dispatcher.add_handler(MessageHandler(Filters.document.mime("application/*"), store_file))
-updater.start_polling()
-updater.idle()
+    return new_file_path
+
+# Define a function to set the thumbnail of a file
+def set_thumbnail(file_path, thumbnail_path):
+    """Sets the thumbnail of a file.
+
+    Args:
+        file_path: The path to the file to set the thumbnail for.
+        thumbnail_path: The path to the thumbnail image.
+    """
+
+    # Create an FFmpeg object
+    ffmpeg_command = ffmpeg.input(file_path).output(file_path, tn=thumbnail_path).overwrite_output().run_pipe()
+
+# Define a function to handle forwarded messages
+@bot.message_handler(func=lambda message: message.content_type == 'message_document')
+def handle_forwarded_messages(message):
+    """Handles forwarded messages.
+
+    Args:
+        message: The Telegram message object.
+    """
+
+    # Get the file path of the forwarded file
+    file_path = bot.get_file_path(message.document.file_id)
+
+    # Get the episode number from the file name
+    episode_number_regex = re.compile(r'EP-(\d+)')
+    episode_number = int(episode_number_regex.search(message.document.file_name).group(1))
+
+    # Get the format of the new file name
+    format = '[SAW] EP- {0:02d} {1}'
+
+    # Rename the file
+    new_file_path = rename_file(file_path, episode_number, format)
+
+    # Set the thumbnail of the file
+    thumbnail_path = os.path.join(os.path.dirname(file_path), 'thumbnail.jpg')
+    set_thumbnail(new_file_path, thumbnail_path)
+
+    # Send the renamed file to the user
+    bot.send_document(message.chat.id, new_file_path)
+
+# Start the Telegram bot
+bot.polling()
