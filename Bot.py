@@ -1,75 +1,94 @@
-import telebot
+
 import os
-import ffmpeg
-import re
+import telebot
+from telebot import types
 
-# Create a Telegram bot object
-bot = telebot.TeleBot('6337637965:AAFVJc09tFgqgeAszChm_XdjTYaQA24HFRw')
+bot = telebot.TeleBot("6734872715:AAH51orbUim5luLE1cJ2x7xszSOz0nyzF9A")
 
-# Define a function to rename a file
-def rename_file(file_path, episode_number, format):
-    """Renames a file to the specified episode number.
+# Add a dictionary to store thumbnail information
+user_thumbnails = {}
 
-    Args:
-        file_path: The path to the file to rename.
-        episode_number: The episode number to rename the file to.
-        format: The format of the new file name.
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, f"""<b>Welcome to the file renamer bot!</b>
 
-    Returns:
-        The new file path.
-    """
+Available commands:
+/start - Show this message
+/rename - Rename a file
+/thumbnail - Set thumbnail for file renaming
 
-    # Get the file extension
-    file_extension = os.path.splitext(file_path)[1]
+Send me a document to rename it.""", parse_mode="HTML")
 
-    # Create a new file path with the episode number
-    new_file_path = os.path.join(os.path.dirname(file_path), format.format(episode_number, file_extension))
+@bot.message_handler(commands=['rename'])
+def start_rename(message):
+    bot.reply_to(message, "Send me the files you want to rename (one at a time).")
+    bot.register_next_step_handler(message, handle_rename_files)
 
-    # Rename the file
-    os.rename(file_path, new_file_path)
+@bot.message_handler(commands=['thumbnail'])
+def set_thumbnail(message):
+    bot.reply_to(message, "Send me the image you want to use as the thumbnail.")
+    bot.register_next_step_handler(message, store_thumbnail)
 
-    return new_file_path
+@bot.message_handler(content_types=['document'])
+def handle_rename_files(message):
+    # Get user chat ID
+    user_chat_id = message.chat.id
 
-# Define a function to set the thumbnail of a file
-def set_thumbnail(file_path, thumbnail_path):
-    """Sets the thumbnail of a file.
+    # Check if user already has files to rename
+    if user_chat_id in user_new_names and user_new_names[user_chat_id] is not None:
+        existing_files = user_new_names[user_chat_id]
+        existing_files.append((message.document.file_name, message.document.file_id))
+        user_new_names[user_chat_id] = existing_files
+    else:
+        user_new_names[user_chat_id] = [(message.document.file_name, message.document.file_id)]
 
-    Args:
-        file_path: The path to the file to set the thumbnail for.
-        thumbnail_path: The path to the thumbnail image.
-    """
+    # Check if user has set a thumbnail
+    if user_chat_id in user_thumbnails:
+        thumbnail = user_thumbnails[user_chat_id]
+    else:
+        thumbnail = None
 
-    # Create an FFmpeg object
-    ffmpeg_command = ffmpeg.input(file_path).output(file_path, tn=thumbnail_path).overwrite_output().run_pipe()
+    # Prompt user for confirmation
+    bot.reply_to(message, f"""<b>Files to rename:</b>
+{', '.join([filename for filename, _ in user_new_names[user_chat_id]])}
 
-# Define a function to handle forwarded messages
-@bot.message_handler(func=lambda message: message.content_type == 'message_document')
-def handle_forwarded_messages(message):
-    """Handles forwarded messages.
+<b>Thumbnail:</b> {thumbnail if thumbnail else 'None'}
 
-    Args:
-        message: The Telegram message object.
-    """
+<b>Are you sure you want to rename these files?</b> (Yes/No)""", parse_mode="HTML")
+    bot.register_next_step_handler(message, confirm_rename_files)
 
-    # Get the file path of the forwarded file
-    file_path = bot.get_file_path(message.document.file_id)
+def handle_new_name(message):
+    # Get user chat ID and rename information
+    user_chat_id = message.chat.id
+    original_files, downloaded_files = user_new_names[user_chat_id], dict()
+    thumbnail = user_thumbnails[user_chat_id] if user_chat_id in user_thumbnails else None
 
-    # Get the episode number from the file name
-    episode_number_regex = re.compile(r'EP-(\d+)')
-    episode_number = int(episode_number_regex.search(message.document.file_name).group(1))
+    # Validate and process user input
+    new_filenames = message.text.strip().split('\n')
+    if len(new_filenames) != len(original_files):
+        bot.reply_to(message, "Error: The number of new filenames doesn't match the number of files.")
+        return
 
-    # Get the format of the new file name
-    format = '[SAW] EP- {0:02d} {1}'
+    # Rename files and send them back to the user
+    for original_filename, downloaded_file, new_filename in zip(original_files, downloaded_files, new_filenames):
+        renamed_file_name = os.path.join(os.getcwd(), new_filename)
+        with open(renamed_file_name, 'wb') as renamed_file:
+            renamed_file.write(downloaded_file)
+        with open(renamed_file_name, 'rb') as renamed_file:
+            bot.send_document(message.chat.id, renamed_file, thumb=thumbnail)
+        os.remove(renamed_file_name)
 
-    # Rename the file
-    new_file_path = rename_file(file_path, episode_number, format)
+    # Cleanup user information
+    del user_new_names[user_chat_id]
+    if user_chat_id in user_thumbnails:
+        del user_thumbnails[user_chat_id]
 
-    # Set the thumbnail of the file
-    thumbnail_path = os.path.join(os.path.dirname(file_path), 'thumbnail.jpg')
-    set_thumbnail(new_file_path, thumbnail_path)
+    bot.reply_to(message, "Files renamed successfully!")
 
-    # Send the renamed file to the user
-    bot.send_document(message.chat.id, new_file_path)
+def store_thumbnail(message):
+    # Get user chat ID and download thumbnail
+    user_chat_id = message.chat.id
+    file_info = bot.get_file(message.document.file_id)
+    
 
-# Start the Telegram bot
-bot.polling()
+    
